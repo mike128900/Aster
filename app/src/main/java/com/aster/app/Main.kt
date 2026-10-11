@@ -21,6 +21,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
 import org.vosk.android.RecognitionListener
@@ -90,8 +91,8 @@ class MainActivity : Activity() {
 class AsterService : Service(), RecognitionListener {
 
     companion object {
-        // Phrases that trigger the assistant. Add or change them here.
-        private val PHRASES = listOf("hey aster", "hey astor", "hey easter", "hey a star")
+        // Any of these heard in speech triggers the assistant. Add more here if needed.
+        private val KEYWORDS = listOf("aster", "astor", "easter", "a star", "astro")
         // How long to stop listening so ChatGPT can use the microphone.
         private const val PAUSE_MS = 60000L
     }
@@ -138,8 +139,7 @@ class AsterService : Service(), RecognitionListener {
     private fun listen() {
         val m = model ?: return
         try {
-            val grammar = "[" + (PHRASES + "[unk]").joinToString(",") { "\"$it\"" } + "]"
-            val recognizer = Recognizer(m, 16000.0f, grammar)
+            val recognizer = Recognizer(m, 16000.0f)
             speech = SpeechService(recognizer, 16000.0f)
             speech?.startListening(this)
         } catch (e: IOException) {
@@ -147,10 +147,25 @@ class AsterService : Service(), RecognitionListener {
         }
     }
 
-    private fun check(json: String?) {
-        if (paused || json == null) return
-        val text = json.lowercase()
-        if (PHRASES.any { text.contains(it) }) trigger()
+    private fun toast(msg: String) {
+        handler.post { Toast.makeText(applicationContext, msg, Toast.LENGTH_SHORT).show() }
+    }
+
+    private fun heardText(json: String?): String {
+        if (json == null) return ""
+        return try {
+            val o = JSONObject(json)
+            o.optString("text").ifEmpty { o.optString("partial") }
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
+    private fun check(json: String?, final: Boolean) {
+        if (paused) return
+        val text = heardText(json).lowercase()
+        if (final && text.isNotBlank()) toast("Heard: $text")
+        if (KEYWORDS.any { text.contains(it) }) trigger()
     }
 
     private fun trigger() {
@@ -158,15 +173,20 @@ class AsterService : Service(), RecognitionListener {
         speech?.stop()
         speech?.shutdown()
         speech = null
-        startActivity(Intent(Intent.ACTION_ASSIST).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        toast("Opening assistant...")
+        try {
+            startActivity(Intent(Intent.ACTION_ASSIST).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (e: Exception) {
+            toast("Could not open: ${e.message}")
+        }
         handler.postDelayed({
             paused = false
             listen()
         }, PAUSE_MS)
     }
 
-    override fun onPartialResult(hypothesis: String?) = check(hypothesis)
-    override fun onResult(hypothesis: String?) = check(hypothesis)
+    override fun onPartialResult(hypothesis: String?) = check(hypothesis, false)
+    override fun onResult(hypothesis: String?) = check(hypothesis, true)
     override fun onFinalResult(hypothesis: String?) {}
     override fun onError(exception: Exception?) {
         Log.e("Aster", "Recognizer error", exception)
